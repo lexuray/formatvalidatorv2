@@ -15,9 +15,5 @@
     "formidable": "^3.5.1",
     "adm-zip": "^0.5.10",
     "xmldom": "^0.6.0"
-  },
-  "devDependencies": {
-    "eslint": "^8.55.0",
-    "eslint-config-next": "14.0.0"
   }
 }
