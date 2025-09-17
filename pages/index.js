@@ -341,7 +341,12 @@ class ClientAPAValidator {
   analyze(docData) {
     const { text, html, documentXml, stylesXml, filename } = docData;
     
+    // Store XML for use in other methods
+    this.documentXml = documentXml;
+    this.stylesXml = stylesXml;
+    
     console.log('🔍 Starting client-side analysis...');
+    console.log('📄 Document XML length:', documentXml.length);
     
     const results = {
       filename,
@@ -352,7 +357,8 @@ class ClientAPAValidator {
         textLength: text.length,
         font: this.detectFont(stylesXml, documentXml),
         headings: this.countHeadings(text),
-        citations: this.countCitations(text)
+        citations: this.countCitations(text),
+        documentPreview: text.substring(0, 300)
       }
     };
 
@@ -548,21 +554,122 @@ class ClientAPAValidator {
   }
 
   validateHeadings(text, results) {
-    const headingCount = this.countHeadings(text);
+    // Extract headings from the document XML structure
+    const headings = this.extractHeadingsFromXML(this.documentXml || '');
     
-    if (headingCount > 0) {
+    console.log('🔍 Extracted headings:', headings);
+    
+    if (headings.length > 0) {
       results.passing.push({
-        message: `✅ Organizational headings detected (${headingCount})`,
-        details: 'Document appears to use headings for organization'
+        message: `✅ Found ${headings.length} heading(s)`,
+        details: 'Document uses headings for organization'
+      });
+      
+      // Check each heading for proper formatting
+      headings.forEach((heading, index) => {
+        // Check if heading is bold
+        if (heading.isBold) {
+          results.passing.push({
+            message: `✅ "${heading.text}" is properly bolded`,
+            details: `Level ${heading.level} heading follows APA bold requirement`
+          });
+        } else {
+          results.issues.push({
+            id: `heading-not-bold-${index}`,
+            severity: 'error',
+            message: `"${heading.text}" should be bold`,
+            details: `APA Level ${heading.level} headings must be formatted in bold`
+          });
+        }
+        
+        // Check centering for Level 1 headings
+        if (heading.level === 1) {
+          if (heading.isCentered) {
+            results.passing.push({
+              message: `✅ Level 1 heading "${heading.text}" is centered`,
+              details: 'Centering follows APA Level 1 heading requirements'
+            });
+          } else {
+            results.issues.push({
+              id: `heading-not-centered-${index}`,
+              severity: 'error',
+              message: `Level 1 heading "${heading.text}" should be centered`,
+              details: 'APA Level 1 headings must be centered'
+            });
+          }
+        } else {
+          // Level 2+ headings should NOT be centered
+          if (heading.isCentered) {
+            results.issues.push({
+              id: `heading-incorrectly-centered-${index}`,
+              severity: 'error',
+              message: `Level ${heading.level} heading "${heading.text}" should not be centered`,
+              details: `APA Level ${heading.level} headings should be flush left`
+            });
+          } else {
+            results.passing.push({
+              message: `✅ Level ${heading.level} heading "${heading.text}" is flush left`,
+              details: 'Alignment follows APA requirements'
+            });
+          }
+        }
       });
     } else {
       results.issues.push({
         id: 'no-headings',
         severity: 'suggestion',
-        message: 'No clear headings detected',
-        details: 'Consider using APA-style headings to organize content'
+        message: 'No APA-style headings detected',
+        details: 'Consider using formatted headings to organize content'
       });
     }
+  }
+
+  extractHeadingsFromXML(documentXml) {
+    const headings = [];
+    
+    // Look for paragraphs with heading styles
+    const paragraphRegex = /<w:p[^>]*>([\s\S]*?)<\/w:p>/g;
+    let match;
+    
+    while ((match = paragraphRegex.exec(documentXml)) !== null) {
+      const paragraphXml = match[1];
+      
+      // Check if this paragraph has a heading style
+      const styleMatch = paragraphXml.match(/<w:pStyle w:val="([^"]*[Hh]eading\d*[^"]*)"/);
+      if (styleMatch) {
+        const styleName = styleMatch[1];
+        const level = this.extractHeadingLevel(styleName);
+        
+        // Extract text from this paragraph
+        const textMatches = paragraphXml.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) || [];
+        let text = '';
+        textMatches.forEach(textMatch => {
+          const content = textMatch.replace(/<w:t[^>]*>([^<]*)<\/w:t>/, '$1');
+          text += content;
+        });
+        
+        if (text.trim()) {
+          // Check formatting
+          const isBold = paragraphXml.includes('<w:b/>') || paragraphXml.includes('<w:b ');
+          const isCentered = paragraphXml.includes('w:val="center"') || paragraphXml.includes('jc w:val="center"');
+          
+          headings.push({
+            text: text.trim(),
+            level,
+            isBold,
+            isCentered,
+            rawXml: paragraphXml.substring(0, 200) // For debugging
+          });
+        }
+      }
+    }
+    
+    return headings;
+  }
+
+  extractHeadingLevel(styleName) {
+    const match = styleName.match(/[Hh]eading\s*(\d+)/);
+    return match ? parseInt(match[1]) : 1;
   }
 
   validateCitations(text, results) {
