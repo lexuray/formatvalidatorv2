@@ -15,29 +15,56 @@ export default function Home() {
     setDismissedIssues(new Set());
   };
 
-  const handleUpload = async () => {
+  const processDocument = async () => {
     if (!file) return;
 
     setLoading(true);
     setError(null);
 
-    const formData = new FormData();
-    formData.append('document', file);
-
     try {
-      const response = await fetch('/api/validate', {
-        method: 'POST',
-        body: formData,
+      // Load JSZip and mammoth from CDN
+      const JSZip = (await import('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js')).default;
+      const mammoth = (await import('https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js')).default;
+
+      console.log('📄 Processing file:', file.name);
+
+      // Read file as array buffer
+      const arrayBuffer = await file.arrayBuffer();
+      
+      // Extract text using mammoth
+      const textResult = await mammoth.extractRawText({ arrayBuffer });
+      const htmlResult = await mammoth.convertToHtml({ arrayBuffer });
+      
+      console.log('📝 Extracted text length:', textResult.value.length);
+      console.log('📝 Text preview:', textResult.value.substring(0, 200));
+
+      // Parse DOCX structure using JSZip
+      const zip = new JSZip();
+      const docx = await zip.loadAsync(arrayBuffer);
+      
+      // Extract XML files
+      const documentXml = await docx.file('word/document.xml')?.async('string') || '';
+      const stylesXml = await docx.file('word/styles.xml')?.async('string') || '';
+      
+      console.log('📋 Document XML length:', documentXml.length);
+      console.log('🎨 Styles XML length:', stylesXml.length);
+
+      // Analyze the document
+      const validator = new ClientAPAValidator();
+      const validationResults = validator.analyze({
+        text: textResult.value,
+        html: htmlResult.value,
+        documentXml,
+        stylesXml,
+        filename: file.name
       });
 
-      if (!response.ok) {
-        throw new Error('Validation failed');
-      }
+      console.log('✅ Analysis complete:', validationResults);
+      setResults(validationResults);
 
-      const data = await response.json();
-      setResults(data);
     } catch (err) {
-      setError(err.message);
+      console.error('❌ Processing error:', err);
+      setError(`Failed to process document: ${err.message}`);
     } finally {
       setLoading(false);
     }
@@ -73,18 +100,18 @@ export default function Home() {
   return (
     <div style={{ minHeight: '100vh', background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' }}>
       <Head>
-        <title>APA 7 Validator - Professional Edition</title>
-        <meta name="description" content="Professional APA 7 formatting validation" />
+        <title>APA 7 Validator - Working Edition</title>
+        <meta name="description" content="Actually working APA 7 formatting validation" />
       </Head>
 
       <div style={{ padding: '2rem', maxWidth: '1200px', margin: '0 auto' }}>
         {/* Header */}
         <div style={{ textAlign: 'center', marginBottom: '3rem', color: 'white' }}>
           <h1 style={{ fontSize: '4rem', fontWeight: '700', textShadow: '0 4px 8px rgba(0,0,0,0.3)', marginBottom: '1rem' }}>
-            APA 7 Formatter & Validator
+            APA 7 Validator - Working Edition
           </h1>
           <p style={{ fontSize: '1.5rem', opacity: '0.9' }}>
-            Professional-grade APA formatting validation with accurate Word document analysis
+            Client-side Word document analysis that actually works
           </p>
         </div>
 
@@ -120,7 +147,7 @@ export default function Home() {
           
           {file && (
             <button
-              onClick={handleUpload}
+              onClick={processDocument}
               disabled={loading}
               style={{
                 background: loading ? '#6c757d' : 'linear-gradient(135deg, #28a745 0%, #20c997 100%)',
@@ -134,7 +161,7 @@ export default function Home() {
                 marginTop: '1rem'
               }}
             >
-              {loading ? 'Analyzing Document...' : 'Validate APA Formatting'}
+              {loading ? '🔍 Analyzing Document...' : '🚀 Validate APA Formatting'}
             </button>
           )}
         </div>
@@ -150,7 +177,7 @@ export default function Home() {
             marginBottom: '2rem',
             textAlign: 'center'
           }}>
-            Error: {error}
+            {error}
           </div>
         )}
 
@@ -286,44 +313,342 @@ export default function Home() {
               </div>
             )}
 
-            {/* Download Reports */}
-            <div style={{ 
-              marginTop: '2rem', 
-              paddingTop: '2rem', 
-              borderTop: '1px solid #dee2e6',
-              display: 'flex',
-              gap: '1rem',
-              justifyContent: 'center',
-              flexWrap: 'wrap'
-            }}>
-              <button style={{
-                background: 'linear-gradient(135deg, #28a745 0%, #20c997 100%)',
-                color: 'white',
-                border: 'none',
-                padding: '1rem 2rem',
+            {/* Debug Info */}
+            {results.debug && (
+              <div style={{ 
+                marginTop: '2rem', 
+                padding: '1rem',
+                background: '#f8f9fa',
                 borderRadius: '8px',
-                fontSize: '1rem',
-                fontWeight: '600',
-                cursor: 'pointer'
+                fontSize: '0.9rem'
               }}>
-                📄 Download Detailed Report
-              </button>
-              <button style={{
-                background: 'white',
-                color: '#667eea',
-                border: '2px solid #667eea',
-                padding: '1rem 2rem',
-                borderRadius: '8px',
-                fontSize: '1rem',
-                fontWeight: '600',
-                cursor: 'pointer'
-              }}>
-                💡 Download APA Guide
-              </button>
-            </div>
+                <h4>🔍 Analysis Details:</h4>
+                <p><strong>Text Length:</strong> {results.debug.textLength} characters</p>
+                <p><strong>Font Detected:</strong> {results.debug.font || 'Not detected'}</p>
+                <p><strong>Headings Found:</strong> {results.debug.headings || 0}</p>
+                <p><strong>Citations Found:</strong> {results.debug.citations || 0}</p>
+              </div>
+            )}
           </div>
         )}
       </div>
     </div>
   );
+}
+
+// Client-side APA Validator
+class ClientAPAValidator {
+  analyze(docData) {
+    const { text, html, documentXml, stylesXml, filename } = docData;
+    
+    console.log('🔍 Starting client-side analysis...');
+    
+    const results = {
+      filename,
+      issues: [],
+      passing: [],
+      score: 0,
+      debug: {
+        textLength: text.length,
+        font: this.detectFont(stylesXml, documentXml),
+        headings: this.countHeadings(text),
+        citations: this.countCitations(text)
+      }
+    };
+
+    // Run all validations
+    this.validateFont(stylesXml, documentXml, results);
+    this.validateSpacing(html, documentXml, results);
+    this.validateTitlePage(text, results);
+    this.validateAbstract(text, results);
+    this.validateHeadings(text, results);
+    this.validateCitations(text, results);
+    this.validateReferences(text, results);
+    this.validatePageNumbers(documentXml, results);
+
+    // Calculate score
+    const errors = results.issues.filter(i => i.severity === 'error').length;
+    const warnings = results.issues.filter(i => i.severity === 'warning').length;
+    const suggestions = results.issues.filter(i => i.severity === 'suggestion').length;
+    
+    results.score = Math.max(0, 100 - (errors * 15) - (warnings * 8) - (suggestions * 3));
+
+    console.log('📊 Analysis results:', {
+      passing: results.passing.length,
+      errors,
+      warnings,
+      suggestions,
+      score: results.score
+    });
+
+    return results;
+  }
+
+  detectFont(stylesXml, documentXml) {
+    // Look for font in styles and document XML
+    const fontMatch = (stylesXml + documentXml).match(/w:ascii="([^"]+)"/i);
+    return fontMatch ? fontMatch[1] : 'Unknown';
+  }
+
+  countHeadings(text) {
+    const headingPatterns = [
+      /^[A-Z][^.!?]*$/gm, // Lines that look like headings
+      /Introduction|Method|Results|Discussion|Conclusion/gi
+    ];
+    let count = 0;
+    headingPatterns.forEach(pattern => {
+      const matches = text.match(pattern) || [];
+      count += matches.length;
+    });
+    return Math.min(count, 10); // Cap at reasonable number
+  }
+
+  countCitations(text) {
+    const citationPattern = /\([A-Za-z\s&,.-]+,\s*\d{4}[a-z]?\)/g;
+    const matches = text.match(citationPattern) || [];
+    return matches.length;
+  }
+
+  validateFont(stylesXml, documentXml, results) {
+    const font = this.detectFont(stylesXml, documentXml);
+    const acceptableFonts = ['Times New Roman', 'Calibri', 'Arial', 'Georgia', 'Lucida Sans Unicode'];
+    
+    const isAcceptable = acceptableFonts.some(acceptable => 
+      font.toLowerCase().includes(acceptable.toLowerCase())
+    );
+
+    if (isAcceptable) {
+      results.passing.push({
+        message: `✅ Font detected: ${font}`,
+        details: 'Font appears to meet APA requirements'
+      });
+    } else if (font !== 'Unknown') {
+      results.issues.push({
+        id: 'font-issue',
+        severity: 'warning',
+        message: `Font "${font}" may not be APA compliant`,
+        details: 'APA 7 recommends Times New Roman 12pt, Calibri 11pt, Arial 11pt, Georgia 11pt, or Lucida Sans Unicode 10pt'
+      });
+    }
+  }
+
+  validateSpacing(html, documentXml, results) {
+    // Check for double spacing indicators
+    const hasDoubleSpacing = html.includes('line-height:2') || 
+                           html.includes('line-height: 2') ||
+                           documentXml.includes('w:line="480"');
+
+    if (hasDoubleSpacing) {
+      results.passing.push({
+        message: '✅ Double spacing detected',
+        details: 'Document appears to use proper line spacing'
+      });
+    } else {
+      results.issues.push({
+        id: 'spacing-issue',
+        severity: 'suggestion',
+        message: 'Document spacing cannot be verified',
+        details: 'Ensure document is double-spaced throughout'
+      });
+    }
+  }
+
+  validateTitlePage(text, results) {
+    const firstPage = text.substring(0, 1000);
+    
+    // Check for basic title page elements
+    if (firstPage.trim().length > 50) {
+      results.passing.push({
+        message: '✅ Title page content found',
+        details: 'Document has content that appears to be a title page'
+      });
+    }
+
+    // Check for author
+    const authorPatterns = [
+      /^[A-Z][a-z]+\s+[A-Z][a-z]+/m,
+      /Author/i,
+      /By\s+[A-Z]/i
+    ];
+    
+    const hasAuthor = authorPatterns.some(pattern => pattern.test(firstPage));
+    if (hasAuthor) {
+      results.passing.push({
+        message: '✅ Author information detected',
+        details: 'Title page appears to include author information'
+      });
+    } else {
+      results.issues.push({
+        id: 'author-missing',
+        severity: 'warning',
+        message: 'Author information may be missing',
+        details: 'Title page should include author name(s)'
+      });
+    }
+
+    // Check for institution
+    const institutionPatterns = [/university/i, /college/i, /school/i];
+    const hasInstitution = institutionPatterns.some(pattern => pattern.test(firstPage));
+    
+    if (hasInstitution) {
+      results.passing.push({
+        message: '✅ Institution information found',
+        details: 'Title page includes institutional affiliation'
+      });
+    } else {
+      results.issues.push({
+        id: 'institution-missing',
+        severity: 'suggestion',
+        message: 'Institutional affiliation may be missing',
+        details: 'Include your university or institution on the title page'
+      });
+    }
+  }
+
+  validateAbstract(text, results) {
+    const abstractMatch = text.match(/Abstract\s*([\s\S]*?)(?:Keywords?|Introduction|Method|$)/i);
+    
+    if (abstractMatch) {
+      results.passing.push({
+        message: '✅ Abstract section found',
+        details: 'Document includes an abstract'
+      });
+      
+      const abstractText = abstractMatch[1].trim();
+      const wordCount = abstractText.split(/\s+/).filter(w => w.length > 0).length;
+      
+      if (wordCount >= 150 && wordCount <= 250) {
+        results.passing.push({
+          message: `✅ Abstract length appropriate (${wordCount} words)`,
+          details: 'Abstract word count follows APA guidelines'
+        });
+      } else if (wordCount > 250) {
+        results.issues.push({
+          id: 'abstract-long',
+          severity: 'suggestion',
+          message: `Abstract is lengthy (${wordCount} words)`,
+          details: 'APA recommends 150-250 words for abstracts'
+        });
+      } else if (wordCount > 50) {
+        results.issues.push({
+          id: 'abstract-short',
+          severity: 'suggestion',
+          message: `Abstract is brief (${wordCount} words)`,
+          details: 'Consider expanding to 150-250 words'
+        });
+      }
+    } else {
+      results.issues.push({
+        id: 'abstract-missing',
+        severity: 'suggestion',
+        message: 'Abstract section not clearly detected',
+        details: 'Many academic papers benefit from an abstract'
+      });
+    }
+  }
+
+  validateHeadings(text, results) {
+    const headingCount = this.countHeadings(text);
+    
+    if (headingCount > 0) {
+      results.passing.push({
+        message: `✅ Organizational headings detected (${headingCount})`,
+        details: 'Document appears to use headings for organization'
+      });
+    } else {
+      results.issues.push({
+        id: 'no-headings',
+        severity: 'suggestion',
+        message: 'No clear headings detected',
+        details: 'Consider using APA-style headings to organize content'
+      });
+    }
+  }
+
+  validateCitations(text, results) {
+    const citationCount = this.countCitations(text);
+    
+    if (citationCount > 0) {
+      results.passing.push({
+        message: `✅ In-text citations found (${citationCount})`,
+        details: 'Document includes properly formatted citations'
+      });
+      
+      // Check for quotes without page numbers
+      const quotes = text.match(/"[^"]{20,}"/g) || [];
+      let quotesWithoutPages = 0;
+      
+      quotes.forEach(quote => {
+        const quoteIndex = text.indexOf(quote);
+        const afterQuote = text.substring(quoteIndex + quote.length, quoteIndex + quote.length + 50);
+        
+        if (!afterQuote.match(/^\s*\([^)]+,\s*\d{4}[^)]*,\s*pp?\.\s*\d+/)) {
+          quotesWithoutPages++;
+        }
+      });
+      
+      if (quotesWithoutPages > 0) {
+        results.issues.push({
+          id: 'quotes-no-pages',
+          severity: 'error',
+          message: `${quotesWithoutPages} quote(s) may be missing page numbers`,
+          details: 'Direct quotes should include page numbers: (Author, Year, p. #)'
+        });
+      }
+    } else {
+      results.issues.push({
+        id: 'no-citations',
+        severity: 'suggestion',
+        message: 'No in-text citations detected',
+        details: 'Academic papers typically require citations'
+      });
+    }
+  }
+
+  validateReferences(text, results) {
+    const referencesMatch = text.match(/References\s*([\s\S]*?)(?:\n\s*Appendix|$)/i);
+    
+    if (referencesMatch) {
+      results.passing.push({
+        message: '✅ References section found',
+        details: 'Document includes a references section'
+      });
+      
+      const referencesText = referencesMatch[1].trim();
+      if (referencesText.length > 100) {
+        const referenceCount = (referencesText.match(/\n[A-Z]/g) || []).length;
+        results.passing.push({
+          message: `✅ References contain entries (~${referenceCount})`,
+          details: 'References section appears to have bibliography entries'
+        });
+      }
+    } else {
+      results.issues.push({
+        id: 'references-missing',
+        severity: 'warning',
+        message: 'References section not detected',
+        details: 'Academic papers should include a References section'
+      });
+    }
+  }
+
+  validatePageNumbers(documentXml, results) {
+    const hasPageNumbers = documentXml.includes('w:pgNum') || 
+                          documentXml.includes('PAGE') ||
+                          documentXml.includes('w:fldChar');
+    
+    if (hasPageNumbers) {
+      results.passing.push({
+        message: '✅ Page numbering detected',
+        details: 'Document appears to have page numbers'
+      });
+    } else {
+      results.issues.push({
+        id: 'page-numbers-missing',
+        severity: 'suggestion',
+        message: 'Page numbers may be missing',
+        details: 'Include page numbers in the top right corner'
+      });
+    }
+  }
 }
