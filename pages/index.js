@@ -1,761 +1,763 @@
 import { useState } from 'react';
 import Head from 'next/head';
+import Script from 'next/script';
 
 export default function Home() {
   const [file, setFile] = useState(null);
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [dismissedIssues, setDismissedIssues] = useState(new Set());
-
-  const handleFileSelect = (selectedFile) => {
-    setFile(selectedFile);
-    setResults(null);
-    setError(null);
-    setDismissedIssues(new Set());
-  };
+  const [debugMode, setDebugMode] = useState(false);
+  const [scriptsLoaded, setScriptsLoaded] = useState(false);
 
   const processDocument = async () => {
     if (!file) return;
-
+    
     setLoading(true);
     setError(null);
-
+    
     try {
-      // Load JSZip and mammoth from CDN
-      const JSZip = (await import('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js')).default;
-      const mammoth = (await import('https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js')).default;
+      // Make sure scripts are loaded
+      if (!window.mammoth || !window.JSZip) {
+        throw new Error('Required libraries not loaded. Please refresh and try again.');
+      }
 
-      console.log('📄 Processing file:', file.name);
-
-      // Read file as array buffer
       const arrayBuffer = await file.arrayBuffer();
       
-      // Extract text using mammoth
-      const textResult = await mammoth.extractRawText({ arrayBuffer });
-      const htmlResult = await mammoth.convertToHtml({ arrayBuffer });
+      // Get text and HTML using mammoth
+      const textResult = await window.mammoth.extractRawText({ arrayBuffer });
+      const htmlResult = await window.mammoth.convertToHtml({ arrayBuffer });
       
-      console.log('📝 Extracted text length:', textResult.value.length);
-      console.log('📝 Text preview:', textResult.value.substring(0, 200));
-
-      // Parse DOCX structure using JSZip
-      const zip = new JSZip();
+      // Extract XML files from DOCX using JSZip
+      const zip = new window.JSZip();
       const docx = await zip.loadAsync(arrayBuffer);
       
-      // Extract XML files
       const documentXml = await docx.file('word/document.xml')?.async('string') || '';
       const stylesXml = await docx.file('word/styles.xml')?.async('string') || '';
+      const settingsXml = await docx.file('word/settings.xml')?.async('string') || '';
       
-      console.log('📋 Document XML length:', documentXml.length);
-      console.log('🎨 Styles XML length:', stylesXml.length);
-
-      // Analyze the document
-      const validator = new ClientAPAValidator();
-      const validationResults = validator.analyze({
-        text: textResult.value,
-        html: htmlResult.value,
-        documentXml,
-        stylesXml,
-        filename: file.name
-      });
-
-      console.log('✅ Analysis complete:', validationResults);
+      // Parse and validate
+      const docStructure = parseDocumentStructure(documentXml, stylesXml, settingsXml);
+      const validationResults = validateDocument(textResult.value, htmlResult.value, docStructure);
+      
       setResults(validationResults);
-
+      
     } catch (err) {
-      console.error('❌ Processing error:', err);
-      setError(`Failed to process document: ${err.message}`);
+      console.error('Error:', err);
+      setError(`Failed to process: ${err.message}`);
     } finally {
       setLoading(false);
     }
   };
 
-  const toggleDismiss = (issueId) => {
-    const newDismissed = new Set(dismissedIssues);
-    if (newDismissed.has(issueId)) {
-      newDismissed.delete(issueId);
-    } else {
-      newDismissed.add(issueId);
-    }
-    setDismissedIssues(newDismissed);
-  };
-
-  const getActiveIssues = () => {
-    if (!results) return { errors: [], warnings: [], suggestions: [] };
-    
-    return {
-      errors: results.issues.filter(i => i.severity === 'error' && !dismissedIssues.has(i.id)),
-      warnings: results.issues.filter(i => i.severity === 'warning' && !dismissedIssues.has(i.id)),
-      suggestions: results.issues.filter(i => i.severity === 'suggestion' && !dismissedIssues.has(i.id))
-    };
-  };
-
-  const calculateScore = () => {
-    if (!results) return 0;
-    const active = getActiveIssues();
-    const totalDeductions = (active.errors.length * 15) + (active.warnings.length * 8) + (active.suggestions.length * 3);
-    return Math.max(0, 100 - totalDeductions);
-  };
-
   return (
-    <div style={{ minHeight: '100vh', background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' }}>
+    <>
       <Head>
-        <title>APA 7 Validator - Working Edition</title>
-        <meta name="description" content="Actually working APA 7 formatting validation" />
+        <title>APA 7 Format Validator</title>
+        <meta name="description" content="Free APA 7 format checker for Word documents" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
+      
+      {/* Load external scripts */}
+      <Script 
+        src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"
+        strategy="afterInteractive"
+        onLoad={() => {
+          if (window.JSZip) setScriptsLoaded(true);
+        }}
+      />
+      <Script 
+        src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"
+        strategy="afterInteractive"
+        onLoad={() => {
+          if (window.mammoth) setScriptsLoaded(true);
+        }}
+      />
 
-      <div style={{ padding: '2rem', maxWidth: '1200px', margin: '0 auto' }}>
-        {/* Header */}
-        <div style={{ textAlign: 'center', marginBottom: '3rem', color: 'white' }}>
-          <h1 style={{ fontSize: '4rem', fontWeight: '700', textShadow: '0 4px 8px rgba(0,0,0,0.3)', marginBottom: '1rem' }}>
-            APA 7 Validator - Working Edition
-          </h1>
-          <p style={{ fontSize: '1.5rem', opacity: '0.9' }}>
-            Client-side Word document analysis that actually works
-          </p>
-        </div>
-
-        {/* Upload Area */}
-        <div style={{ 
-          border: '3px dashed rgba(255,255,255,0.3)', 
-          borderRadius: '16px', 
-          padding: '3rem 2rem', 
-          textAlign: 'center', 
-          background: 'rgba(255,255,255,0.1)', 
-          backdropFilter: 'blur(10px)', 
-          color: 'white',
-          marginBottom: '2rem',
-          cursor: 'pointer',
-          transition: 'all 0.3s ease'
-        }}>
-          <input
-            type="file"
-            accept=".docx"
-            onChange={(e) => handleFileSelect(e.target.files[0])}
-            style={{ display: 'none' }}
-            id="fileInput"
-          />
-          <label htmlFor="fileInput" style={{ cursor: 'pointer', display: 'block' }}>
-            <div style={{ fontSize: '4rem', marginBottom: '1rem', opacity: '0.8' }}>📄</div>
-            <h3 style={{ marginBottom: '1rem', fontSize: '1.5rem', fontWeight: '600' }}>
-              {file ? file.name : 'Upload your Word document'}
-            </h3>
-            <p style={{ margin: '0.5rem 0', opacity: '0.8' }}>
-              Click here to select your .docx file
-            </p>
-          </label>
+      <div className="container">
+        <style jsx global>{`
+          * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+          }
           
-          {file && (
-            <button
-              onClick={processDocument}
-              disabled={loading}
-              style={{
-                background: loading ? '#6c757d' : 'linear-gradient(135deg, #28a745 0%, #20c997 100%)',
-                color: 'white',
-                border: 'none',
-                padding: '1rem 2rem',
-                borderRadius: '8px',
-                fontSize: '1rem',
-                fontWeight: '600',
-                cursor: loading ? 'not-allowed' : 'pointer',
-                marginTop: '1rem'
-              }}
-            >
-              {loading ? '🔍 Analyzing Document...' : '🚀 Validate APA Formatting'}
-            </button>
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+          }
+          
+          .container {
+            min-height: 100vh;
+            padding: 2rem;
+          }
+          
+          .wrapper {
+            max-width: 1200px;
+            margin: 0 auto;
+          }
+          
+          .title {
+            color: white;
+            text-align: center;
+            font-size: 3rem;
+            margin-bottom: 1rem;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.2);
+          }
+          
+          .subtitle {
+            color: rgba(255,255,255,0.9);
+            text-align: center;
+            margin-bottom: 2rem;
+          }
+          
+          .upload-area {
+            background: rgba(255,255,255,0.1);
+            backdrop-filter: blur(10px);
+            border: 2px dashed rgba(255,255,255,0.3);
+            border-radius: 1rem;
+            padding: 2rem;
+            text-align: center;
+            margin-bottom: 2rem;
+            transition: all 0.3s ease;
+          }
+          
+          .upload-area:hover {
+            background: rgba(255,255,255,0.15);
+          }
+          
+          .file-input {
+            display: none;
+          }
+          
+          .upload-label {
+            cursor: pointer;
+            display: block;
+          }
+          
+          .upload-icon {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+          }
+          
+          .upload-text {
+            color: white;
+            margin-bottom: 0.5rem;
+            font-size: 1.5rem;
+          }
+          
+          .upload-subtext {
+            color: rgba(255,255,255,0.8);
+          }
+          
+          .button-group {
+            margin-top: 1rem;
+            display: flex;
+            gap: 0.5rem;
+            justify-content: center;
+          }
+          
+          .btn {
+            padding: 0.75rem 2rem;
+            border: none;
+            border-radius: 0.5rem;
+            font-size: 1.1rem;
+            cursor: pointer;
+            transition: transform 0.2s;
+          }
+          
+          .btn:hover {
+            transform: translateY(-2px);
+          }
+          
+          .btn-primary {
+            background: #28a745;
+            color: white;
+          }
+          
+          .btn-secondary {
+            background: #6c757d;
+            color: white;
+            padding: 0.75rem 1rem;
+            font-size: 0.9rem;
+          }
+          
+          .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+          }
+          
+          .error-box {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            margin-bottom: 2rem;
+          }
+          
+          .results-container {
+            background: white;
+            border-radius: 1rem;
+            padding: 2rem;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+          }
+          
+          .score-container {
+            text-align: center;
+            margin-bottom: 2rem;
+          }
+          
+          .score-circle {
+            width: 150px;
+            height: 150px;
+            border-radius: 50%;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+          }
+          
+          .score-number {
+            font-size: 3rem;
+            font-weight: bold;
+          }
+          
+          .score-label {
+            font-size: 0.9rem;
+          }
+          
+          .score-message {
+            margin-top: 1rem;
+            color: #333;
+          }
+          
+          .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+          }
+          
+          .stat-card {
+            background: #f8f9fa;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            text-align: center;
+          }
+          
+          .stat-number {
+            font-size: 2rem;
+            font-weight: bold;
+          }
+          
+          .stat-label {
+            color: #6c757d;
+          }
+          
+          .category-section {
+            margin-bottom: 2rem;
+          }
+          
+          .category-header {
+            margin-bottom: 1rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+          }
+          
+          .issue-card {
+            border-radius: 0.5rem;
+            padding: 1rem;
+            margin-bottom: 0.5rem;
+          }
+          
+          .issue-title {
+            font-weight: bold;
+            margin-bottom: 0.5rem;
+          }
+          
+          .issue-details {
+            font-size: 0.9rem;
+          }
+          
+          .issue-location {
+            font-size: 0.85rem;
+            margin-top: 0.5rem;
+            opacity: 0.8;
+          }
+          
+          .issue-fix {
+            background: white;
+            padding: 0.5rem;
+            margin-top: 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.9rem;
+          }
+        `}</style>
+
+        <div className="wrapper">
+          <h1 className="title">APA 7 Format Validator</h1>
+          <p className="subtitle">
+            Complete formatting detection: fonts, spacing, margins, headings, citations, and more
+          </p>
+          
+          <div className="upload-area">
+            <input
+              type="file"
+              accept=".docx"
+              onChange={(e) => setFile(e.target.files[0])}
+              className="file-input"
+              id="fileInput"
+            />
+            <label htmlFor="fileInput" className="upload-label">
+              <div className="upload-icon">📄</div>
+              <h3 className="upload-text">
+                {file ? file.name : 'Upload Word Document'}
+              </h3>
+              <p className="upload-subtext">Click to select .docx file</p>
+            </label>
+            
+            {file && (
+              <div className="button-group">
+                <button
+                  onClick={processDocument}
+                  disabled={loading || !scriptsLoaded}
+                  className="btn btn-primary"
+                >
+                  {loading ? '🔍 Analyzing...' : '✅ Check Formatting'}
+                </button>
+                <button
+                  onClick={() => setDebugMode(!debugMode)}
+                  className="btn btn-secondary"
+                >
+                  🔧 {debugMode ? 'Hide' : 'Show'} Debug
+                </button>
+              </div>
+            )}
+            
+            {!scriptsLoaded && file && (
+              <p style={{ color: 'rgba(255,255,255,0.8)', marginTop: '1rem' }}>
+                Loading required libraries...
+              </p>
+            )}
+          </div>
+
+          {error && (
+            <div className="error-box">
+              {error}
+            </div>
+          )}
+
+          {results && (
+            <div className="results-container">
+              <ResultsDisplay results={results} debugMode={debugMode} />
+            </div>
           )}
         </div>
-
-        {/* Error Display */}
-        {error && (
-          <div style={{
-            background: 'rgba(220, 53, 69, 0.1)',
-            border: '1px solid #dc3545',
-            borderRadius: '8px',
-            padding: '1rem',
-            color: '#dc3545',
-            marginBottom: '2rem',
-            textAlign: 'center'
-          }}>
-            {error}
-          </div>
-        )}
-
-        {/* Results */}
-        {results && (
-          <div style={{
-            background: 'white',
-            borderRadius: '16px',
-            padding: '2rem',
-            boxShadow: '0 20px 40px rgba(0,0,0,0.1)'
-          }}>
-            {/* Score */}
-            <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-              <div style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                width: '150px',
-                height: '150px',
-                borderRadius: '50%',
-                background: calculateScore() >= 90 ? 'linear-gradient(135deg, #28a745 0%, #20c997 100%)' :
-                           calculateScore() >= 70 ? 'linear-gradient(135deg, #ffc107 0%, #fd7e14 100%)' :
-                           'linear-gradient(135deg, #dc3545 0%, #e83e8c 100%)',
-                color: 'white',
-                margin: '0 auto 1rem',
-                boxShadow: '0 10px 30px rgba(102, 126, 234, 0.3)'
-              }}>
-                <div style={{ fontSize: '3rem', fontWeight: 'bold', lineHeight: '1' }}>
-                  {Math.round(calculateScore())}%
-                </div>
-                <div style={{ fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                  APA Compliance
-                </div>
-              </div>
-            </div>
-
-            {/* What's Working Well (Green) */}
-            {results.passing && results.passing.length > 0 && (
-              <div style={{ marginBottom: '2rem' }}>
-                <h3 style={{ color: '#28a745', marginBottom: '1rem', borderBottom: '2px solid #28a745', paddingBottom: '0.5rem' }}>
-                  ✅ What's Working Well ({results.passing.length} items)
-                </h3>
-                {results.passing.map((item, index) => (
-                  <div key={index} style={{
-                    background: '#d4edda',
-                    border: '1px solid #c3e6cb',
-                    borderRadius: '8px',
-                    padding: '1rem',
-                    marginBottom: '0.5rem'
-                  }}>
-                    <div style={{ fontWeight: '600', color: '#155724' }}>{item.message}</div>
-                    <div style={{ fontSize: '0.9rem', color: '#155724', opacity: '0.8' }}>{item.details}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Issues */}
-            {['error', 'warning', 'suggestion'].map(severity => {
-              const activeIssues = getActiveIssues();
-              const issues = activeIssues[severity + 's'] || [];
-              if (issues.length === 0) return null;
-
-              const colors = {
-                error: { bg: '#f8d7da', border: '#f5c6cb', text: '#721c24' },
-                warning: { bg: '#fff3cd', border: '#ffeaa7', text: '#856404' },
-                suggestion: { bg: '#d1ecf1', border: '#bee5eb', text: '#0c5460' }
-              };
-
-              const icons = {
-                error: '❌',
-                warning: '⚠️', 
-                suggestion: '💡'
-              };
-
-              return (
-                <div key={severity} style={{ marginBottom: '2rem' }}>
-                  <h3 style={{ 
-                    color: colors[severity].text, 
-                    marginBottom: '1rem', 
-                    borderBottom: `2px solid ${colors[severity].text}`, 
-                    paddingBottom: '0.5rem' 
-                  }}>
-                    {icons[severity]} {severity.charAt(0).toUpperCase() + severity.slice(1)}s ({issues.length} items)
-                  </h3>
-                  {issues.map((issue) => (
-                    <div key={issue.id} style={{
-                      background: dismissedIssues.has(issue.id) ? '#e9ecef' : colors[severity].bg,
-                      border: `1px solid ${colors[severity].border}`,
-                      borderRadius: '8px',
-                      padding: '1rem',
-                      marginBottom: '0.5rem',
-                      opacity: dismissedIssues.has(issue.id) ? '0.5' : '1',
-                      position: 'relative'
-                    }}>
-                      <button
-                        onClick={() => toggleDismiss(issue.id)}
-                        style={{
-                          position: 'absolute',
-                          top: '1rem',
-                          right: '1rem',
-                          background: dismissedIssues.has(issue.id) ? '#28a745' : '#6c757d',
-                          color: 'white',
-                          border: 'none',
-                          width: '28px',
-                          height: '28px',
-                          borderRadius: '50%',
-                          cursor: 'pointer',
-                          fontSize: '1rem',
-                          fontWeight: 'bold'
-                        }}
-                      >
-                        {dismissedIssues.has(issue.id) ? '✓' : '×'}
-                      </button>
-                      <div style={{ fontWeight: '600', color: colors[severity].text, marginBottom: '0.5rem' }}>
-                        {issue.message}
-                      </div>
-                      <div style={{ fontSize: '0.9rem', color: colors[severity].text, opacity: '0.8' }}>
-                        {issue.details}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              );
-            })}
-
-            {/* No Issues */}
-            {results.issues.length === 0 && (
-              <div style={{ textAlign: 'center', padding: '3rem', color: '#28a745' }}>
-                <h3 style={{ fontSize: '1.5rem', marginBottom: '1rem' }}>🎉 Perfect APA Formatting!</h3>
-                <p style={{ fontSize: '1.1rem' }}>Your document follows all APA 7 guidelines correctly.</p>
-              </div>
-            )}
-
-            {/* Debug Info */}
-            {results.debug && (
-              <div style={{ 
-                marginTop: '2rem', 
-                padding: '1rem',
-                background: '#f8f9fa',
-                borderRadius: '8px',
-                fontSize: '0.9rem'
-              }}>
-                <h4>🔍 Analysis Details:</h4>
-                <p><strong>Text Length:</strong> {results.debug.textLength} characters</p>
-                <p><strong>Font Detected:</strong> {results.debug.font || 'Not detected'}</p>
-                <p><strong>Headings Found:</strong> {results.debug.headings || 0}</p>
-                <p><strong>Citations Found:</strong> {results.debug.citations || 0}</p>
-              </div>
-            )}
-          </div>
-        )}
       </div>
-    </div>
+    </>
   );
 }
 
-// Client-side APA Validator
-class ClientAPAValidator {
-  analyze(docData) {
-    const { text, html, documentXml, stylesXml, filename } = docData;
-    
-    // Store XML for use in other methods
-    this.documentXml = documentXml;
-    this.stylesXml = stylesXml;
-    
-    console.log('🔍 Starting client-side analysis...');
-    console.log('📄 Document XML length:', documentXml.length);
-    
-    const results = {
-      filename,
-      issues: [],
-      passing: [],
-      score: 0,
-      debug: {
-        textLength: text.length,
-        font: this.detectFont(stylesXml, documentXml),
-        headings: this.countHeadings(text),
-        citations: this.countCitations(text),
-        documentPreview: text.substring(0, 300)
-      }
+// Results display component
+function ResultsDisplay({ results, debugMode }) {
+  const [expandedCategories, setExpandedCategories] = useState({
+    errors: true,
+    warnings: true,
+    passed: false
+  });
+
+  const toggleCategory = (category) => {
+    setExpandedCategories(prev => ({
+      ...prev,
+      [category]: !prev[category]
+    }));
+  };
+
+  const getScoreColor = (score) => {
+    if (score >= 90) return '#28a745';
+    if (score >= 70) return '#ffc107';
+    return '#dc3545';
+  };
+
+  const categoryConfig = {
+    errors: { 
+      bg: '#f8d7da', 
+      border: '#f5c6cb', 
+      text: '#721c24',
+      icon: '❌',
+      title: 'Errors - Must Fix'
+    },
+    warnings: { 
+      bg: '#fff3cd', 
+      border: '#ffeaa7', 
+      text: '#856404',
+      icon: '⚠️',
+      title: 'Warnings - Should Fix'
+    },
+    passed: { 
+      bg: '#d4edda', 
+      border: '#c3e6cb', 
+      text: '#155724',
+      icon: '✅',
+      title: 'Passed Checks'
+    }
+  };
+
+  return (
+    <>
+      <div className="score-container">
+        <div 
+          className="score-circle" 
+          style={{ background: getScoreColor(results.score) }}
+        >
+          <div className="score-number">{results.score}%</div>
+          <div className="score-label">APA Score</div>
+        </div>
+        <h3 className="score-message">
+          {results.score >= 90 ? 'Excellent Formatting!' :
+           results.score >= 70 ? 'Good, but needs some fixes' :
+           'Several formatting issues to address'}
+        </h3>
+      </div>
+
+      <div className="stats-grid">
+        <div className="stat-card">
+          <div className="stat-number" style={{ color: '#dc3545' }}>
+            {results.categories.errors.length}
+          </div>
+          <div className="stat-label">Errors</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-number" style={{ color: '#ffc107' }}>
+            {results.categories.warnings.length}
+          </div>
+          <div className="stat-label">Warnings</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-number" style={{ color: '#28a745' }}>
+            {results.categories.passed.length}
+          </div>
+          <div className="stat-label">Passed</div>
+        </div>
+      </div>
+
+      {Object.entries(results.categories).map(([category, items]) => {
+        if (items.length === 0) return null;
+        const config = categoryConfig[category];
+        const expanded = expandedCategories[category];
+
+        return (
+          <div key={category} className="category-section">
+            <h3 
+              className="category-header"
+              onClick={() => toggleCategory(category)}
+              style={{ color: config.text }}
+            >
+              <span>
+                {config.icon} {config.title} ({items.length})
+              </span>
+              <span>{expanded ? '▼' : '▶'}</span>
+            </h3>
+            
+            {expanded && items.map((item, index) => (
+              <div 
+                key={index} 
+                className="issue-card"
+                style={{
+                  background: config.bg,
+                  border: `1px solid ${config.border}`
+                }}
+              >
+                <div className="issue-title" style={{ color: config.text }}>
+                  {item.issue}
+                </div>
+                <div className="issue-details" style={{ color: config.text }}>
+                  {item.details}
+                </div>
+                {item.location && (
+                  <div className="issue-location" style={{ color: config.text }}>
+                    📍 Location: {item.location}
+                  </div>
+                )}
+                {item.fix && (
+                  <div className="issue-fix">
+                    💡 <strong>How to fix:</strong> {item.fix}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        );
+      })}
+
+      {debugMode && results.debug && (
+        <div style={{
+          marginTop: '2rem',
+          padding: '1rem',
+          background: '#f8f9fa',
+          borderRadius: '0.5rem',
+          fontSize: '0.85rem',
+          fontFamily: 'monospace'
+        }}>
+          <h4>🔧 Debug Information</h4>
+          <pre style={{ whiteSpace: 'pre-wrap' }}>
+            {JSON.stringify(results.debug, null, 2)}
+          </pre>
+        </div>
+      )}
+    </>
+  );
+}
+
+// Parse document structure
+function parseDocumentStructure(documentXml, stylesXml, settingsXml) {
+  const structure = {
+    paragraphs: [],
+    styles: {},
+    fonts: new Set(),
+    fontSize: null,
+    margins: {},
+    spacing: {},
+    hasPageNumbers: false,
+    citations: []
+  };
+
+  // Parse margins
+  const marginMatch = documentXml.match(/<w:pgMar[^>]*\/>/);
+  if (marginMatch) {
+    const marginTag = marginMatch[0];
+    structure.margins = {
+      top: extractValue(marginTag, 'w:top'),
+      bottom: extractValue(marginTag, 'w:bottom'),
+      left: extractValue(marginTag, 'w:left'),
+      right: extractValue(marginTag, 'w:right')
     };
+  }
 
-    // Run all validations
-    this.validateFont(stylesXml, documentXml, results);
-    this.validateSpacing(html, documentXml, results);
-    this.validateTitlePage(text, results);
-    this.validateAbstract(text, results);
-    this.validateHeadings(text, results);
-    this.validateCitations(text, results);
-    this.validateReferences(text, results);
-    this.validatePageNumbers(documentXml, results);
+  // Check for page numbers
+  structure.hasPageNumbers = documentXml.includes('w:pgNum') || 
+                             documentXml.includes('PAGE');
 
-    // Calculate score
-    const errors = results.issues.filter(i => i.severity === 'error').length;
-    const warnings = results.issues.filter(i => i.severity === 'warning').length;
-    const suggestions = results.issues.filter(i => i.severity === 'suggestion').length;
+  // Parse styles
+  const styleMatches = stylesXml.matchAll(/<w:style[^>]*w:styleId="([^"]+)"[^>]*>([\s\S]*?)<\/w:style>/g);
+  for (const match of styleMatches) {
+    const styleId = match[1];
+    const styleContent = match[2];
     
-    results.score = Math.max(0, 100 - (errors * 15) - (warnings * 8) - (suggestions * 3));
+    if (styleId.toLowerCase().includes('heading')) {
+      structure.styles[styleId] = {
+        type: 'heading',
+        level: parseInt(styleId.match(/\d/) || '1'),
+        bold: styleContent.includes('<w:b/>'),
+        italic: styleContent.includes('<w:i/>'),
+        centered: styleContent.includes('w:val="center"')
+      };
+    }
+  }
 
-    console.log('📊 Analysis results:', {
-      passing: results.passing.length,
-      errors,
-      warnings,
-      suggestions,
-      score: results.score
+  // Parse paragraphs
+  const paragraphMatches = documentXml.matchAll(/<w:p[^>]*>([\s\S]*?)<\/w:p>/g);
+  for (const match of paragraphMatches) {
+    const paragraph = parseParagraph(match[1], structure.styles);
+    if (paragraph.text.trim()) {
+      structure.paragraphs.push(paragraph);
+      
+      // Extract citations
+      const citationMatches = paragraph.text.matchAll(/\(([^)]+,\s*\d{4}[^)]*)\)/g);
+      for (const cite of citationMatches) {
+        structure.citations.push(cite[0]);
+      }
+    }
+  }
+
+  // Extract fonts
+  const fontMatches = documentXml.matchAll(/w:ascii="([^"]+)"/g);
+  for (const match of fontMatches) {
+    structure.fonts.add(match[1]);
+  }
+
+  return structure;
+}
+
+function parseParagraph(paragraphXml, styles) {
+  const paragraph = {
+    text: '',
+    styleId: null,
+    isHeading: false,
+    headingLevel: 0,
+    isBold: false,
+    isItalic: false,
+    isCentered: false,
+    indent: 0
+  };
+
+  // Extract style
+  const styleMatch = paragraphXml.match(/<w:pStyle w:val="([^"]+)"/);
+  if (styleMatch) {
+    paragraph.styleId = styleMatch[1];
+    const styleInfo = styles[paragraph.styleId];
+    if (styleInfo) {
+      paragraph.isHeading = styleInfo.type === 'heading';
+      paragraph.headingLevel = styleInfo.level;
+      paragraph.isBold = styleInfo.bold;
+      paragraph.isItalic = styleInfo.italic;
+      paragraph.isCentered = styleInfo.centered;
+    }
+  }
+
+  // Check direct formatting
+  if (paragraphXml.includes('<w:b/>')) paragraph.isBold = true;
+  if (paragraphXml.includes('<w:i/>')) paragraph.isItalic = true;
+  if (paragraphXml.includes('w:val="center"')) paragraph.isCentered = true;
+
+  // Extract text
+  const textMatches = paragraphXml.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g);
+  for (const match of textMatches) {
+    paragraph.text += match[1];
+  }
+
+  // Auto-detect headings
+  const headingKeywords = ['Abstract', 'Introduction', 'Method', 'Results', 'Discussion', 'References'];
+  if (headingKeywords.some(keyword => paragraph.text.trim() === keyword)) {
+    paragraph.isHeading = true;
+    paragraph.headingLevel = 1;
+  }
+
+  return paragraph;
+}
+
+function extractValue(xmlString, attribute) {
+  const match = xmlString.match(new RegExp(`${attribute}="(\\d+)"`));
+  return match ? parseInt(match[1]) : 0;
+}
+
+// Validation function
+function validateDocument(text, html, structure) {
+  const results = {
+    score: 100,
+    categories: {
+      errors: [],
+      warnings: [],
+      passed: []
+    },
+    debug: {
+      fontsFound: Array.from(structure.fonts),
+      paragraphCount: structure.paragraphs.length,
+      headingCount: structure.paragraphs.filter(p => p.isHeading).length,
+      citationCount: structure.citations.length
+    }
+  };
+
+  // Font validation
+  const acceptableFonts = ['Times New Roman', 'Calibri', 'Arial', 'Georgia'];
+  const hasGoodFont = Array.from(structure.fonts).some(font =>
+    acceptableFonts.some(acceptable => font.includes(acceptable))
+  );
+
+  if (hasGoodFont) {
+    results.categories.passed.push({
+      issue: 'Font Type',
+      details: 'Using APA-approved font'
     });
-
-    return results;
-  }
-
-  detectFont(stylesXml, documentXml) {
-    // Look for font in styles and document XML
-    const fontMatch = (stylesXml + documentXml).match(/w:ascii="([^"]+)"/i);
-    return fontMatch ? fontMatch[1] : 'Unknown';
-  }
-
-  countHeadings(text) {
-    const headingPatterns = [
-      /^[A-Z][^.!?]*$/gm, // Lines that look like headings
-      /Introduction|Method|Results|Discussion|Conclusion/gi
-    ];
-    let count = 0;
-    headingPatterns.forEach(pattern => {
-      const matches = text.match(pattern) || [];
-      count += matches.length;
+  } else if (structure.fonts.size > 0) {
+    results.categories.errors.push({
+      issue: 'Non-standard Font',
+      details: `Font may not meet APA standards`,
+      fix: 'Use Times New Roman 12pt, Calibri 11pt, Arial 11pt, or Georgia 11pt'
     });
-    return Math.min(count, 10); // Cap at reasonable number
+    results.score -= 10;
   }
 
-  countCitations(text) {
-    const citationPattern = /\([A-Za-z\s&,.-]+,\s*\d{4}[a-z]?\)/g;
-    const matches = text.match(citationPattern) || [];
-    return matches.length;
+  // Page numbers
+  if (structure.hasPageNumbers) {
+    results.categories.passed.push({
+      issue: 'Page Numbers',
+      details: 'Document includes page numbering'
+    });
+  } else {
+    results.categories.errors.push({
+      issue: 'Missing Page Numbers',
+      details: 'No page numbers detected',
+      fix: 'Add page numbers in the header, flush right'
+    });
+    results.score -= 8;
   }
 
-  validateFont(stylesXml, documentXml, results) {
-    const font = this.detectFont(stylesXml, documentXml);
-    const acceptableFonts = ['Times New Roman', 'Calibri', 'Arial', 'Georgia', 'Lucida Sans Unicode'];
+  // Headings
+  const headings = structure.paragraphs.filter(p => p.isHeading);
+  if (headings.length > 0) {
+    results.categories.passed.push({
+      issue: 'Document Structure',
+      details: `Found ${headings.length} headings`
+    });
     
-    const isAcceptable = acceptableFonts.some(acceptable => 
-      font.toLowerCase().includes(acceptable.toLowerCase())
-    );
-
-    if (isAcceptable) {
-      results.passing.push({
-        message: `✅ Font detected: ${font}`,
-        details: 'Font appears to meet APA requirements'
-      });
-    } else if (font !== 'Unknown') {
-      results.issues.push({
-        id: 'font-issue',
-        severity: 'warning',
-        message: `Font "${font}" may not be APA compliant`,
-        details: 'APA 7 recommends Times New Roman 12pt, Calibri 11pt, Arial 11pt, Georgia 11pt, or Lucida Sans Unicode 10pt'
-      });
-    }
-  }
-
-  validateSpacing(html, documentXml, results) {
-    // Check for double spacing indicators
-    const hasDoubleSpacing = html.includes('line-height:2') || 
-                           html.includes('line-height: 2') ||
-                           documentXml.includes('w:line="480"');
-
-    if (hasDoubleSpacing) {
-      results.passing.push({
-        message: '✅ Double spacing detected',
-        details: 'Document appears to use proper line spacing'
-      });
-    } else {
-      results.issues.push({
-        id: 'spacing-issue',
-        severity: 'suggestion',
-        message: 'Document spacing cannot be verified',
-        details: 'Ensure document is double-spaced throughout'
-      });
-    }
-  }
-
-  validateTitlePage(text, results) {
-    const firstPage = text.substring(0, 1000);
-    
-    // Check for basic title page elements
-    if (firstPage.trim().length > 50) {
-      results.passing.push({
-        message: '✅ Title page content found',
-        details: 'Document has content that appears to be a title page'
-      });
-    }
-
-    // Check for author
-    const authorPatterns = [
-      /^[A-Z][a-z]+\s+[A-Z][a-z]+/m,
-      /Author/i,
-      /By\s+[A-Z]/i
-    ];
-    
-    const hasAuthor = authorPatterns.some(pattern => pattern.test(firstPage));
-    if (hasAuthor) {
-      results.passing.push({
-        message: '✅ Author information detected',
-        details: 'Title page appears to include author information'
-      });
-    } else {
-      results.issues.push({
-        id: 'author-missing',
-        severity: 'warning',
-        message: 'Author information may be missing',
-        details: 'Title page should include author name(s)'
-      });
-    }
-
-    // Check for institution
-    const institutionPatterns = [/university/i, /college/i, /school/i];
-    const hasInstitution = institutionPatterns.some(pattern => pattern.test(firstPage));
-    
-    if (hasInstitution) {
-      results.passing.push({
-        message: '✅ Institution information found',
-        details: 'Title page includes institutional affiliation'
-      });
-    } else {
-      results.issues.push({
-        id: 'institution-missing',
-        severity: 'suggestion',
-        message: 'Institutional affiliation may be missing',
-        details: 'Include your university or institution on the title page'
-      });
-    }
-  }
-
-  validateAbstract(text, results) {
-    const abstractMatch = text.match(/Abstract\s*([\s\S]*?)(?:Keywords?|Introduction|Method|$)/i);
-    
-    if (abstractMatch) {
-      results.passing.push({
-        message: '✅ Abstract section found',
-        details: 'Document includes an abstract'
-      });
+    headings.forEach(heading => {
+      const headingText = heading.text.substring(0, 30);
       
-      const abstractText = abstractMatch[1].trim();
-      const wordCount = abstractText.split(/\s+/).filter(w => w.length > 0).length;
-      
-      if (wordCount >= 150 && wordCount <= 250) {
-        results.passing.push({
-          message: `✅ Abstract length appropriate (${wordCount} words)`,
-          details: 'Abstract word count follows APA guidelines'
+      if (!heading.isBold) {
+        results.categories.errors.push({
+          issue: 'Heading Not Bold',
+          details: `"${headingText}" must be bold`,
+          fix: 'All APA headings must be bold'
         });
-      } else if (wordCount > 250) {
-        results.issues.push({
-          id: 'abstract-long',
-          severity: 'suggestion',
-          message: `Abstract is lengthy (${wordCount} words)`,
-          details: 'APA recommends 150-250 words for abstracts'
-        });
-      } else if (wordCount > 50) {
-        results.issues.push({
-          id: 'abstract-short',
-          severity: 'suggestion',
-          message: `Abstract is brief (${wordCount} words)`,
-          details: 'Consider expanding to 150-250 words'
-        });
+        results.score -= 8;
       }
-    } else {
-      results.issues.push({
-        id: 'abstract-missing',
-        severity: 'suggestion',
-        message: 'Abstract section not clearly detected',
-        details: 'Many academic papers benefit from an abstract'
-      });
-    }
-  }
-
-  validateHeadings(text, results) {
-    // Extract headings from the document XML structure
-    const headings = this.extractHeadingsFromXML(this.documentXml || '');
-    
-    console.log('🔍 Extracted headings:', headings);
-    
-    if (headings.length > 0) {
-      results.passing.push({
-        message: `✅ Found ${headings.length} heading(s)`,
-        details: 'Document uses headings for organization'
-      });
       
-      // Check each heading for proper formatting
-      headings.forEach((heading, index) => {
-        // Check if heading is bold
-        if (heading.isBold) {
-          results.passing.push({
-            message: `✅ "${heading.text}" is properly bolded`,
-            details: `Level ${heading.level} heading follows APA bold requirement`
-          });
-        } else {
-          results.issues.push({
-            id: `heading-not-bold-${index}`,
-            severity: 'error',
-            message: `"${heading.text}" should be bold`,
-            details: `APA Level ${heading.level} headings must be formatted in bold`
-          });
-        }
-        
-        // Check centering for Level 1 headings
-        if (heading.level === 1) {
-          if (heading.isCentered) {
-            results.passing.push({
-              message: `✅ Level 1 heading "${heading.text}" is centered`,
-              details: 'Centering follows APA Level 1 heading requirements'
-            });
-          } else {
-            results.issues.push({
-              id: `heading-not-centered-${index}`,
-              severity: 'error',
-              message: `Level 1 heading "${heading.text}" should be centered`,
-              details: 'APA Level 1 headings must be centered'
-            });
-          }
-        } else {
-          // Level 2+ headings should NOT be centered
-          if (heading.isCentered) {
-            results.issues.push({
-              id: `heading-incorrectly-centered-${index}`,
-              severity: 'error',
-              message: `Level ${heading.level} heading "${heading.text}" should not be centered`,
-              details: `APA Level ${heading.level} headings should be flush left`
-            });
-          } else {
-            results.passing.push({
-              message: `✅ Level ${heading.level} heading "${heading.text}" is flush left`,
-              details: 'Alignment follows APA requirements'
-            });
-          }
-        }
-      });
-    } else {
-      results.issues.push({
-        id: 'no-headings',
-        severity: 'suggestion',
-        message: 'No APA-style headings detected',
-        details: 'Consider using formatted headings to organize content'
-      });
-    }
-  }
-
-  extractHeadingsFromXML(documentXml) {
-    const headings = [];
-    
-    // Look for paragraphs with heading styles
-    const paragraphRegex = /<w:p[^>]*>([\s\S]*?)<\/w:p>/g;
-    let match;
-    
-    while ((match = paragraphRegex.exec(documentXml)) !== null) {
-      const paragraphXml = match[1];
-      
-      // Check if this paragraph has a heading style
-      const styleMatch = paragraphXml.match(/<w:pStyle w:val="([^"]*[Hh]eading\d*[^"]*)"/);
-      if (styleMatch) {
-        const styleName = styleMatch[1];
-        const level = this.extractHeadingLevel(styleName);
-        
-        // Extract text from this paragraph
-        const textMatches = paragraphXml.match(/<w:t[^>]*>([^<]*)<\/w:t>/g) || [];
-        let text = '';
-        textMatches.forEach(textMatch => {
-          const content = textMatch.replace(/<w:t[^>]*>([^<]*)<\/w:t>/, '$1');
-          text += content;
+      if (heading.headingLevel === 1 && !heading.isCentered) {
+        results.categories.errors.push({
+          issue: 'Level 1 Not Centered',
+          details: `"${headingText}" should be centered`,
+          fix: 'Level 1 headings must be centered'
         });
-        
-        if (text.trim()) {
-          // Check formatting
-          const isBold = paragraphXml.includes('<w:b/>') || paragraphXml.includes('<w:b ');
-          const isCentered = paragraphXml.includes('w:val="center"') || paragraphXml.includes('jc w:val="center"');
-          
-          headings.push({
-            text: text.trim(),
-            level,
-            isBold,
-            isCentered,
-            rawXml: paragraphXml.substring(0, 200) // For debugging
-          });
-        }
+        results.score -= 8;
       }
-    }
-    
-    return headings;
+    });
+  } else {
+    results.categories.warnings.push({
+      issue: 'No Headings Found',
+      details: 'Document lacks formatted headings',
+      fix: 'Use APA heading styles to organize your paper'
+    });
+    results.score -= 10;
   }
 
-  extractHeadingLevel(styleName) {
-    const match = styleName.match(/[Hh]eading\s*(\d+)/);
-    return match ? parseInt(match[1]) : 1;
+  // References
+  if (text.includes('References')) {
+    results.categories.passed.push({
+      issue: 'References Section',
+      details: 'Document includes References'
+    });
+  } else {
+    results.categories.warnings.push({
+      issue: 'No References Section',
+      details: 'References section not found',
+      fix: 'Add References section with cited sources'
+    });
+    results.score -= 5;
   }
 
-  validateCitations(text, results) {
-    const citationCount = this.countCitations(text);
-    
-    if (citationCount > 0) {
-      results.passing.push({
-        message: `✅ In-text citations found (${citationCount})`,
-        details: 'Document includes properly formatted citations'
-      });
-      
-      // Check for quotes without page numbers
-      const quotes = text.match(/"[^"]{20,}"/g) || [];
-      let quotesWithoutPages = 0;
-      
-      quotes.forEach(quote => {
-        const quoteIndex = text.indexOf(quote);
-        const afterQuote = text.substring(quoteIndex + quote.length, quoteIndex + quote.length + 50);
-        
-        if (!afterQuote.match(/^\s*\([^)]+,\s*\d{4}[^)]*,\s*pp?\.\s*\d+/)) {
-          quotesWithoutPages++;
-        }
-      });
-      
-      if (quotesWithoutPages > 0) {
-        results.issues.push({
-          id: 'quotes-no-pages',
-          severity: 'error',
-          message: `${quotesWithoutPages} quote(s) may be missing page numbers`,
-          details: 'Direct quotes should include page numbers: (Author, Year, p. #)'
-        });
-      }
-    } else {
-      results.issues.push({
-        id: 'no-citations',
-        severity: 'suggestion',
-        message: 'No in-text citations detected',
-        details: 'Academic papers typically require citations'
-      });
-    }
+  // Citations
+  if (structure.citations.length > 0) {
+    results.categories.passed.push({
+      issue: 'In-text Citations',
+      details: `Found ${structure.citations.length} citations`
+    });
+  } else {
+    results.categories.warnings.push({
+      issue: 'No Citations',
+      details: 'No in-text citations found',
+      fix: 'Add APA citations for all sources'
+    });
+    results.score -= 10;
   }
 
-  validateReferences(text, results) {
-    const referencesMatch = text.match(/References\s*([\s\S]*?)(?:\n\s*Appendix|$)/i);
-    
-    if (referencesMatch) {
-      results.passing.push({
-        message: '✅ References section found',
-        details: 'Document includes a references section'
-      });
-      
-      const referencesText = referencesMatch[1].trim();
-      if (referencesText.length > 100) {
-        const referenceCount = (referencesText.match(/\n[A-Z]/g) || []).length;
-        results.passing.push({
-          message: `✅ References contain entries (~${referenceCount})`,
-          details: 'References section appears to have bibliography entries'
-        });
-      }
-    } else {
-      results.issues.push({
-        id: 'references-missing',
-        severity: 'warning',
-        message: 'References section not detected',
-        details: 'Academic papers should include a References section'
-      });
-    }
-  }
-
-  validatePageNumbers(documentXml, results) {
-    const hasPageNumbers = documentXml.includes('w:pgNum') || 
-                          documentXml.includes('PAGE') ||
-                          documentXml.includes('w:fldChar');
-    
-    if (hasPageNumbers) {
-      results.passing.push({
-        message: '✅ Page numbering detected',
-        details: 'Document appears to have page numbers'
-      });
-    } else {
-      results.issues.push({
-        id: 'page-numbers-missing',
-        severity: 'suggestion',
-        message: 'Page numbers may be missing',
-        details: 'Include page numbers in the top right corner'
-      });
-    }
-  }
+  results.score = Math.max(0, results.score);
+  return results;
 }
